@@ -1,0 +1,1104 @@
+# Date last changes: 30/05/2024
+# Author: Jonathan Thommis
+
+# * Guidelines *****************************************************************
+## Usage .......................................................................
+# This script can be used to analyze repeated biological replicates of NanoBiT
+# experiments. Two or more replicates can be analysed.
+
+## File formats ................................................................
+# First analyse individual replicates with the provided (separate) script called
+# 'NanoBiT_analysis_individual_replicates.R'. The output from this script can
+# be used as input for this analysis.
+
+# Each file should be provided as a *.csv file and contain following columns:
+#   Time              the time points (minutes) of each measurement
+#   Treatment         the name of the treatment corresponding to the measurement
+#   Type              measurement type, can be either nanobit or baseline
+#   mean_raw          the mean of the raw counts of multiple technical
+#                     replicates
+#   sd_raw            the standard deviation of the raw counts of multiple
+#                     technical replicates
+#   mean_norm         the mean of the normalized counts of multiple technical
+#                     replicates
+#   sd_norm           the standard deviation of the normalized counts of
+#                     multiple technical replicates
+#   fold_raw          fold changes for all treatments verus a reference
+#                     treatment, typically the vehicle condition. This fold
+#                     change is calculated based on the raw counts.
+#   fold_raw_sd       the standard deviation for the fold_raw
+#   fold_norm         fold changes for all treatments verus a reference
+#                     treatment, typically the vehicle condition. This fold
+#                     change is calculated based on the normalized counts.
+#   fold_norm_sd      the standard deviation for the fold_norm
+
+# File paths are provided in the file_replicate_* variables. If you wish to
+# analyse only two biological replicates, ensure that you set file_replicate_3
+# to NULL.
+
+# By default the delimiter used for the csv file is ","; this can be changed
+# if required by changing the input of the delim variable.
+
+## Output directory ............................................................
+# The output of this script includes multiple plots and a file containing the
+# analysed data in csv format. The path and name of the output directory can
+# be set under the dir_output variable. By default, an output directory called
+# results is created in the current working directory.
+
+# Note: the delim variable is also used to determine the separator used for the
+# csv output file.
+
+## Calculating the fold change .................................................
+# The fold change is calculated based on a user specified condition. This
+# condition is specified under the fold_condition variable. By default this
+# variable is set to 'DMSO', seeing this is the most common condition to use
+# for calculating the fold changes of the other treatments.
+
+# The fold change is calculated as follows:
+# 1) calculate the mean and st. dev. for each treatment/condition across all
+#    replicates
+# 2) calculate the fold by dividing these mean values for each treatment by the
+#    mean of the condition specified in condtion_fold
+# 3) the corresponding standard deviation is calculated using the formula:
+#    sd = sqrt((avg A / avg B) * ((sd A / avg A)**2 + (sd B / avg B)**2)
+
+# Note that the fold is not calculated simply by taking the mean of the
+# individual fold changes, as this results in a standard deviation of zero for
+# the condition used to compare to. The fold is calculated both based on the
+# raw counts and the normalized counts, however the default plotting options
+# will preference the usage of the fold changes based on the normalized counts.
+
+## Determining the plotting order ..............................................
+# The order of the conditions/treatments in the plots is handled in the levels
+# variable. The levels variable will be used to set the Treatment column in the
+# tibbles to an ordered factor. Doing so will ensure that the order of plotting
+# treamtents (especially in the barplots) can be controlled by the user.
+
+## Color themes ................................................................
+# Different color themes are provided for use in the different line plots that
+# can be generated. If desired a custom theme can be added to this list of
+# themes. The custom theme should be provided with a unique name and as a
+# character vector of colors. Always ensure the custom color theme contains
+# enough colors to match the number of treatments in the analysis.
+# Alternatively, the different functions that utilize these color themes also
+# contain an option to add custom colors.
+
+## Functions ...................................................................
+# Most of the plotting (ggplot2) execution is wrappped inside a custom function.
+# For more information on usage, check the 'functions' section of this script.
+
+## Packages ....................................................................
+# Ensure the following packages are installed: readr, dplyr, ggplot2 and ggsci.
+# These can all be installed from CRAN using install.packkages().
+
+# * Packages *******************************************************************
+# If not installed, install the following packages from CRAN by uncommenting and
+# running the following code snippet.
+# install.packages("readr")
+# install.packages("dplyr")
+# install.packages("ggplot2")
+# install.packages("ggsci")
+
+# Load required packages.
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(ggsci)
+
+# * User input *****************************************************************
+# Provide the paths to the files needed for analysis:
+file_replicate_1 <- NULL
+file_replicate_2 <- NULL
+file_replicate_3 <- NULL
+
+# Depending on your system settings, determine the delimiter (separator) to be
+# used when loading the files.
+delim <- ";"
+
+# Output directory
+dir_output <- file.path(getwd(), "results")
+
+if (dir.exists(dir_output)) {
+  cat("\nWARNING: this directory already exists.\n")
+} else {
+  dir.create(dir_output)
+}
+
+# Define the condition to use for calculating the fold changes.
+fold_condition <- NULL
+
+# Define the order to be used for plotting. When defined, this will allow you
+# to control the order ggplot uses when plotting the graphs and will determine
+# the order for the different treatments in the legend and the corresponding
+# colors used. If set to NULL, the order will be automatically determined by
+# ggplot (default is the order as they appear in the dataframe).
+levels <- NULL
+
+# ! Under visualizations user input may required depending on user
+# ! preferences.
+# The visualization section can be found at the end of the script.
+# More information on available settings for the plotting functions can be found
+# in the functions section below.
+
+# * Color theme ****************************************************************
+# List of available color themes for plotting. A custom color theme can be
+# added to the list if so desired. The theme should be provided with a unique
+# name and as a character vector of colors. Always ensure the custom color
+# theme contains enough colors to match the number of treatments in the
+# analysis. Alternatively, the different functions that utilize these color
+# themes also contain an option to add custom colors directly in the function
+# call.
+color_themes <- list(
+  "New England Journal of Medicin" = pal_nejm()(8),
+  "Nature Publishing Group" = pal_npg()(10),
+  "Lancet" = pal_lancet()(9),
+  "UCSC Genome Browser" = pal_ucscgb()(26),
+  "Frontiers" = pal_frontiers()(10),
+  "GSEA Gene Pattern" = pal_gsea()(12),
+  "Integrative Genome Viewer" = pal_igv()(51),
+  "Futurama" = pal_futurama()(12),
+  "Tron" = pal_tron()(7),
+  "Rick and Morty (get schwifty)" = pal_rickandmorty()(12),
+  "The Simpsons" = pal_simpsons()(16),
+  "Greens" = c(
+    "#040807", "#0e2217", "#2b4d34", "#406546",
+    "#547c5a", "#6e9577", "#90ad91", "#b5c6b8"
+  ),
+  "Pink and Green" = c(
+    "#c04e62", "#788e76", "#926872",
+    "#405b40", "#7d1623", "#72634a"
+  ),
+  "Wes Anderson" = c(
+    "#38303d", "#5d536a", "#7a6e7c", "#a37788", "#d7a8ac",
+    "#e7afa9", "#d28c9c", "#d98178", "#c46e6a", "#7e4d4b"
+  ),
+  "Wes Anderson 2" = c(
+    "#5d536a", "#a37788", "#e7afa9",
+    "#d98178", "#7e4d4b"
+  )
+)
+
+# * Functions ******************************************************************
+# - Function for calculating the st.dev. for the folds -------------------------
+# Calculates the standard deviation for the fold change calculated as the fold
+# of A over B. Formula used:
+# sd = sqrt( (mean A / mean B) * ((st.dev. A / mean A)**2 + (st.dev. B / mean B)**2)
+fold_sd <- function(
+    mean_a = NULL,
+    mean_b = NULL,
+    sd_a = NULL,
+    sd_b = NULL) {
+  f1 <- mean_a / mean_b
+  f2 <- (sd_a / mean_a)**2 + (sd_b / mean_b)**2
+  sd <- sqrt(f1 * f2)
+  return(sd)
+}
+
+# - Function for plotting baseline counts --------------------------------------
+# This function can be used to plot the baseline counts.
+#   df                    The name of the tibble/dataframe to use for plotting
+#                         the data. By default set to data. Best not to adjust
+#                         this setting.
+#   type                  [character] What plot type do you wish to generate.
+#                         Can be one of:
+#                           "point" plots the individual data points for each
+#                                   well as a point chart.
+#                           "box"   plots the spread across all wells for each
+#                                   time point as a boxplot (default).
+#   title                 [character] the title to use for the plot. Set to NULL
+#                         or "" to remove the title from the plot. By default
+#                         'Baseline measurements' is added as a plot title.
+#   title_x               [character] the x-axis label. Default is 'Time (minutes)'.
+#   title_y               [character] the y-axis label. Default is 'RLU'.
+#   textsize              [numeric] the size for all text in the plot (titles,
+#                          axis text, legend, etc.). Default is 14.
+#   color_theme           [character] name of the color theme to use. Should
+#                         correspond to the names of the color_themes list.
+#                         Default theme is 'Futurama'. If custom_colors are
+#                         specified, the color theme will be ignored.
+#   custom_colors         [character vector] a vector of color names to use as
+#                         a custom theme. If NULL, the color_theme will be used.
+#   filename              Name of the save file. The file extension is added
+#                         based on the file_extension setting.
+#                         placeholder file name ('baseline') will be used if not
+#                         explicitly defined in the function call.
+#   file_extension        The file extension to use when saving the plot. Can be
+#                         one of "eps", "ps", "tex", "pdf", "jpeg", "tiff",
+#                         "png", "bmp", "svg" or "wmf" (windows only). Default
+#                         is "jpeg".
+#   file_height           [numeric] the height of the plot in the save file.
+#                         Expressed in units by the units argument. Default
+#                         setting is 6.
+#   file_width            [numeric] the width of the plot in the save file
+#                         Expressed in units by the units argument. Default
+#                         setting is 8.
+#   dpi                   [numeric] plot resolution. Also accepts a string
+#                         input: "retina" (320), "print" (300) or "screen" (72)
+#                         Default is 900.
+baseline_plot <- function(
+    df = data,
+    type = NULL,
+    title = "Baseline measurements",
+    title_x = "Time (minutes)",
+    title_y = "RLU",
+    textsize = 14,
+    color_theme = "Futurama",
+    custom_colors = NULL,
+    filename = "baseline",
+    file_extension = "jpeg",
+    file_height = 6,
+    file_width = 8,
+    dpi = 900) {
+  # Extract baseline data from dataframe.
+  data <- subset(df, Type == "baseline")
+  # Extract the maximum count from Result column.
+  top <- max(data %>% pull(mean_raw))
+  # Add file extension to filename.
+  filename <- paste0(filename, ".", file_extension)
+
+  # Determine color palette
+  # Determine the number of colors required based on the number of treatments
+  # in the analysis.
+  ncolors <- df %>%
+    pull(Treatment) %>%
+    unique() %>%
+    length()
+  # Check of custom colors are provided, if so check if the number of colors
+  # provided corresponds to the number of treatments (i.e. the number of colors
+  # required).
+  if (!is.null(custom_colors) || !is.character(custom_colors)) {
+    if (length(custom_colors) != ncolors) {
+      colors <- NULL
+    } else {
+      colors <- custom_colors
+    }
+  }
+  # If custom colors was not provided or incorrectly provided, check if a color
+  # theme is specified. Check if number of colors available in this theme is
+  # sufficient.
+  if (is.null(colors) && !is.null(color_theme) && color_theme %in% names(color_themes)) {
+    colors <- color_themes[[color_theme]] %>%
+      head(ncolors)
+  }
+
+  # Make sure the number of colors available is sufficient. If not the colors
+  # variable is set to NULL and ggplot gets to decide which (ugly) colors to
+  # use.
+  if (!is.null(colors) && length(colors) != ncolors) {
+    colors <- NULL
+  }
+
+  # Determine type of plot to construct.
+  if (type == "point") {
+    plot <-
+      ggplot(data = data, aes(x = Time, y = mean_raw, color = Replicate)) +
+      geom_point(alpha = 0.5, size = 3)
+    # Add color theme or custom colors if provided.
+    if (!is.null(colors)) {
+      (
+        plot <- plot + scale_color_manual(values = colors)
+      )
+    }
+  } else if (type == "box") {
+    plot <-
+      ggplot(data = data, aes(x = Time, y = mean_raw, group = Time)) +
+      stat_boxplot(geom = "errorbar", width = 0.5) +
+      geom_boxplot(outlier.size = 0.5, fill = "lightgrey")
+  } else {
+    return(NULL)
+  }
+
+  # Format plot.
+  plot <- plot +
+    ylim(0, top) +
+    scale_x_continuous(
+      breaks = seq(1, max(data %>% pull(Time)))
+    ) +
+    labs(title = title) +
+    xlab(title_x) +
+    ylab(title_y) +
+    theme(
+      panel.background = element_rect(fill = "transparent"),
+      panel.border = element_rect(fill = NA, color = "#595959"),
+      plot.title = element_text(size = textsize, face = "bold"),
+      axis.title = element_text(size = textsize),
+      axis.text = element_text(size = textsize),
+      axis.line = element_blank(),
+      legend.position = "right",
+      legend.title = element_text(face = "bold", size = textsize),
+      legend.text = element_text(size = textsize)
+    )
+
+  # Show plot.
+  print(plot)
+
+  # Save plot to directory.
+  ggsave(
+    plot = plot,
+    file = file.path(dir_output, filename),
+    device = file_extension,
+    height = file_height,
+    width = file_width,
+    dpi = dpi,
+  )
+
+  return(plot)
+}
+
+# - Function for plotting the NanoBiT counts -----------------------------------
+# This function can be used to plot the nanobit counts.
+#   df                    The name of the tibble/dataframe to use for plotting
+#                         the data. By default set to data_summarised. Best not
+#                         to adjust this setting.
+#   type                  What data (type) do you wish to plot. Can be one of:
+#                         "normalized"    plot the normalized counts (default)
+#                         "raw"           plot the raw counts
+#                         "fold_norm"     plot the fold change calculated based
+#                                         on the normalized counts
+#                         "fold_raw"      plot the fold change calculated based
+#                                         on the raw counts
+#   max_time              [numeric] the maximum time point to include in the
+#                         plot. If set to NULL (default) all time points are
+#                         included in the plot
+#   include conditions    [character] a vector of the treatment/condition names
+#                         to include in the plot. If set to NULL (default) all
+#                         conditions included in the dataset will be used.
+#   include_baseline      [BOOL] should the baseline data be included in the
+#                          plot. Default is TRUE.
+#   include_zero          [BOOL] if the baseline is not included
+#                         (include_baseline = FALSE), should time points zero
+#                         be included in the plot? Time point zero corresponds
+#                         to the last baseline measurement (time point 15).
+#                         Default is FALSE.
+#   label                 [character] if the baseline is included in the plot a
+#                         line will be drawn to indicate the time point of
+#                         compound addition. Label can be used to change the
+#                         label used for this line. Default is 'addition
+#                         compounds'. You can remove the label by setting this
+#                         to NULL or "".
+#   label_size            [numeric] size of the label. Default is 5.
+#   label_color           [character] color of the label. Default is 'grey'.
+#   label_line_size       [numeric] thickness of the line. Default is 0.5.
+#   label_position        [numeric] position of the label. Values correspond to
+#                         the x-axis values. Default is -0.5.
+#   color_theme           [character] name of the color theme to use. Should
+#                         correspond to the names of the color_themes list.
+#                         Default is 'Futurama'. If custom_colors are specified
+#                         the color_theme will be ignored.
+#   custom_colors         [character vector] a vector of color names to use as
+#                         a custom theme. If not enough colors are specified,
+#                         the color_theme will be used.
+#   title                 character: the title to use for the plot. Set to NULL
+#                         or "" to remove the title from the plot. The default
+#                         title is set to 'NanoBiT'.
+#   subtitle              [character] the subtitle to use for the plot. Set to
+#                         NULL (default) or "" to remove the subtitle from the
+#                         plot.
+#   title_x               [character] the x-axis label. Default x-axis label is
+#                         'Time (minutes)'.
+#   title_y               [character] the y-axis label. Default is NULL.
+#   linewidth             [numeric] the width of the plot lines. Default is 1.5.
+#   errorbar_size         [numeric] the width of the errorbars. Default is 1.
+#   whiskersize           [numeric] the width of the errorbar whiskers. Can be
+#                         a value between 0 (no whisker) and 1. Default is 0.8.
+#   textsize              [numeric] the size for all text in the plot (titles,
+#                         axis text, legend, etc.). Default is 16.
+#   lgnd_position         [character] the position of the legend. Can be one of
+#                         'right' (dfault), 'left', 'bottom', 'top'.
+#   filename              Name of the save file. The file extension is added
+#                         based on the file_extension setting.
+#   file_extension        The file extension to use when saving the plot. Can be
+#                         one of "eps", "ps", "tex", "pdf", "jpeg", "tiff",
+#                         "png", "bmp", "svg" or "wmf" (windows only). Default
+#                         is "jpeg".
+#   file_height           [numeric] the height of the plot in the save file.
+#                         Expressed in units by the units argument. Default is
+#                         8.
+#   file_width            [numeric] the width of the plot in the save file
+#                         Expressed in units by the units argument. Default is
+#                         12.
+#   dpi                   [numeric] plot resolution. Also accepts a string
+#                         input: "retina" (320), "print" (300) or "screen" (72)
+#                         Default is 900.
+nanobit_plot <- function(
+    df = data_summarised,
+    type = "normalized",
+    max_time = NULL,
+    include_conditions = NULL,
+    include_baseline = TRUE,
+    include_zero = FALSE,
+    label = "Addition compounds",
+    label_size = 5,
+    label_color = "#828282",
+    label_line_size = 0.5,
+    label_position = -0.5,
+    color_theme = "Futurama",
+    custom_colors = NULL,
+    title = "NanoBiT",
+    subtitle = NULL,
+    title_x = "Time (minutes)",
+    title_y = NULL,
+    linewidth = 1.5,
+    errorbar_size = 1,
+    whiskersize = 0.6,
+    textsize = 16,
+    lgnd_position = "right",
+    filename = "nanobit",
+    file_extension = "jpeg",
+    file_width = 12,
+    file_height = 8,
+    dpi = 900) {
+  # Add file extension to filename.
+  filename <- paste0(filename, ".", file_extension)
+  # To be able to include the baseline in the plots, the time points need to be
+  # adjusted to a range from -14 (minute 1) to 0 (minute 15).
+  df <- df %>%
+    mutate(
+      Time = case_when(
+        Type == "baseline" ~ Time - 15,
+        Type == "nanobit" ~ Time
+      )
+    )
+  # Determine type of data to plot.
+  # if type is 'normalized' use the normalized counts.
+  if (type == "normalized") {
+    df <- df %>%
+      select(Type, Time, Treatment, mean_norm, sd_norm) %>%
+      mutate(
+        mean = mean_norm,
+        sd = sd_norm
+      )
+    # If type is 'raw' use the raw counts.
+  } else if (type == "raw") {
+    df <- df %>%
+      select(Type, Time, Treatment, mean_raw, sd_raw) %>%
+      mutate(
+        mean = mean_raw,
+        sd = sd_raw
+      )
+    # If type is 'fold_raw' use the fold changes of the raw counts.
+  } else if (type == "fold_raw") {
+    df <- df %>%
+      select(Type, Time, Treatment, fold_raw, fold_raw_sd) %>%
+      mutate(
+        mean = fold_raw,
+        sd = fold_raw_sd
+      )
+    # If type is 'fold_norm' use the fold changes of the normalized counts.
+  } else if (type == "fold_norm") {
+    df <- df %>%
+      select(Type, Time, Treatment, fold_norm, fold_norm_sd) %>%
+      mutate(
+        mean = fold_norm,
+        sd = fold_norm_sd
+      )
+  } else {
+    # If not correctly specified, cat an error message to the terminal and
+    # return NULL.
+    cat(
+      "\nWARNING",
+      "\n--------------------------------------------------------------\n",
+      "Type needs to be one of:
+        'raw'
+        'normalized'
+        'fold_raw'
+        'fold_norm'\n"
+    )
+    return(NULL)
+  }
+  # Include baseline?
+  if (!include_baseline) {
+    # If baseline not included, plot the nanobit data without time point zero.
+    # Time point zero corresponds to the last time point (minute 15) of the
+    # baseline measurements;
+    if (include_zero) {
+      df <- df %>%
+        filter(Time >= 0)
+    } else {
+      df <- df %>%
+        filter(Type == "nanobit")
+    }
+  }
+  # Filter conditions to include? If specified, the conditions to include in the
+  # plot will be filtered by the user defined options.
+  if (!is.null(include_conditions)) {
+    if (all(include_conditions %in% unique(df$Treatment))) {
+      df <- df %>% filter(Treatment %in% include_conditions)
+    } else {
+      # If the list of conditions is not correct, cat an error message to the
+      # terminal.
+      cat(
+        "\nWARNING",
+        "\n--------------------------------------------------------------\n",
+        "\nOne or more of the condition(s) you selected is unavailable.\n\n"
+      )
+      return(NULL)
+    }
+  }
+
+  # Select max. time point to include.
+  if (!is.null(max_time)) {
+    df <- df %>%
+      filter(Time <= max_time)
+    endpoint <- max_time
+  } else {
+    endpoint <- max(df$Time)
+  }
+
+  # Determine color palette
+  # Determine the number of colors required based on the number of treatments
+  # in the analysis.
+  ncolors <- df %>%
+    pull(Treatment) %>%
+    unique() %>%
+    length()
+  # Check of custom colors are provided, if so check if the number of colors
+  # provided corresponds to the number of treatments (i.e. the number of colors
+  # required).
+  if (!is.null(custom_colors) || !is.character(custom_colors)) {
+    if (length(custom_colors) != ncolors) {
+      colors <- NULL
+    } else {
+      colors <- custom_colors
+    }
+  }
+  # If custom colors was not provided or incorrectly provided, check if a color
+  # theme is specified. Check if number of colors available in this theme is
+  # sufficient.
+  if (is.null(colors) && !is.null(color_theme) && color_theme %in% names(color_themes)) {
+    colors <- color_themes[[color_theme]] %>%
+      head(ncolors)
+  }
+
+  # Make sure the number of colors available is sufficient. If not the colors
+  # variable is set to NULL and ggplot gets to decide which (ugly) colors to
+  # use.
+  if (!is.null(colors) && length(colors) != ncolors) {
+    colors <- NULL
+  }
+
+  # Initialize plot.
+  plot <- ggplot(data = df, aes(x = Time, y = mean, color = Treatment))
+
+  # Include a vertical line and label if include_baseline is TRUE.
+  # Vertical line indicates the point at which the compounds were added.
+  if (include_baseline == TRUE) {
+    plot <- plot +
+      geom_vline(aes(xintercept = 0),
+        linewidth = label_line_size, color = label_color
+      ) +
+      annotate(
+        geom = "text",
+        label = label,
+        x = label_position, y = max(df %>% pull(mean)), hjust = "top",
+        angle = 90, size = label_size, color = label_color
+      )
+  }
+
+  # Generate the line plot.
+  plot <- plot +
+    geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd, color = Treatment),
+      linewidth = errorbar_size, width = whiskersize
+    ) +
+    geom_line(linewidth = linewidth)
+
+  # Add color theme or custom colors if provided.
+  if (!is.null(colors)) {
+    (
+      plot <- plot + scale_color_manual(values = colors)
+    )
+  }
+
+  # Add extra elements to the plot.
+  plot <- plot +
+    scale_x_continuous(
+      breaks = seq(-15, endpoint, 5),
+      labels = abs(seq(-15, endpoint, 5))
+    ) +
+    labs(title = title, subtitle = subtitle) +
+    xlab(title_x) +
+    ylab(title_y) +
+    theme(
+      panel.border = element_rect(fill = NA, color = "#595959"),
+      panel.background = element_rect(fill = "transparent"),
+      plot.title = element_text(size = textsize, face = "bold"),
+      plot.subtitle = element_text(size = textsize),
+      axis.title = element_text(size = textsize),
+      axis.text = element_text(size = textsize),
+      axis.line = element_blank(),
+      legend.title = element_text(size = textsize, face = "bold"),
+      legend.key = element_rect(fill = "transparent"),
+      legend.text = element_text(size = textsize),
+      legend.position = lgnd_position
+    )
+
+  # Display plot.
+  print(plot)
+
+  # Save plot to directory.
+  ggsave(
+    plot = plot,
+    file = file.path(dir_output, filename),
+    device = file_extension,
+    height = file_height,
+    width = file_width,
+    dpi = dpi,
+  )
+
+  return(plot)
+}
+
+# - Function for plotting individual time points -------------------------------
+# Function to plot bar charts of individual time points.
+#   df                    The name of the tibble/dataframe to use for plotting
+#                         the data. By default set to data_summarised. Best not
+#                         to adjust this setting.
+#   type                  [character] What data (type) do you wish to plot.
+#                         Can be one of:
+#                         "normalized"    plot the normalized counts
+#                         "raw"           plot the raw counts
+#                         "fold_norm"     plot the fold change calculated based
+#                                         on the normalized counts (default)
+#                         "fold_raw"      plot the fold change calculated based
+#                                         on the raw counts
+#   use_fold              [character] fold changes are determined on the raw and
+#                         the normalized counts. You can use this setting to
+#                         determine which fold you want to use to determine the
+#                         the maximum fold. Can be one of:
+#                         "normalized"    use the fold calculated based on the
+#                                         normalize counts (default)
+#                         "raw"           use the fold calculated based on the
+#                                         raw counts
+#   time_point            [numeric] specify the time point you wish to plot. if
+#                         NULL (default) the function will use the time point
+#                         that corresponds to the highest (max) fold achieved in
+#                         the assay.
+#   include conditions    [character] a vector of the treatment/condition names
+#                         to include in the plot. If set to NULL (default) all
+#                         conditions included in the dataset will be used.
+#   title                 character: the title to use for the plot. Set to NULL
+#                         or "" to remove the title from the plot. The default
+#                         title is set to 'NanoBiT'.
+#   subtitle              [character] the subtitle to use for the plot. Set to
+#                         NULL (default) or "" to remove the subtitle from the
+#                         plot.
+#   title_x               [character] the x-axis label. Default is NULL.
+#   title_y               [character] the y-axis label. Default is NULL.
+#   bar_color             [character] the color of the bars in the plot. Default
+#                         is 'black'.
+#   errorbar_color        [character] the color of the errorbars. Default is
+#                         'black'.
+#   errorbar_size         [numeric] the width of the errorbars. Default is 2.
+#   whiskersize           [numeric] the width of the errorbar whiskers. Can be
+#                         a value between 0 (no whisker) and 1. Default is 0.5.
+#   textsize              [numeric] the size for all text in the plot (titles,
+#                         axis text, legend, etc.). Default is 16.
+#   filename              Name of the save file. The file extension is added
+#                         based on the file_extension setting.
+#   file_extension        The file extension to use when saving the plot. Can be
+#                         one of "eps", "ps", "tex", "pdf", "jpeg", "tiff",
+#                         "png", "bmp", "svg" or "wmf" (windows only). Default
+#                         is "jpeg".
+#   file_height           [numeric] the height of the plot in the save file.
+#                         Expressed in units by the units argument. Default is
+#                         7.
+#   file_width            [numeric] the width of the plot in the save file
+#                         Expressed in units by the units argument. Default is
+#                         8.
+#   dpi                   [numeric] plot resolution. Also accepts a string
+#                         input: "retina" (320), "print" (300) or "screen" (72)
+#                         Default is 900.
+individual_plot <- function(
+    df = data_summarised,
+    type = "fold_norm",
+    use_fold = "normalized",
+    time_point = NULL,
+    include_conditions = NULL,
+    title = "NanoBiT",
+    subtitle = NULL,
+    title_x = NULL,
+    title_y = NULL,
+    bar_color = "black",
+    errorbar_color = "black",
+    errorbar_size = 2,
+    whiskersize = 0.5,
+    textsize = 18,
+    filename = "individual_time_point",
+    file_extension = "jpeg",
+    file_height = 7,
+    file_width = 8,
+    dpi = 900) {
+  # Add file extension to filename.
+  filename <- paste0(filename, ".", file_extension)
+  # Only nanobit data is used.
+  df <- df %>%
+    filter(Type == "nanobit")
+
+  # Determine time point and max. fold.
+  cat("\n\n************** individual_plot() **************\n")
+  if (use_fold == "normalized") {
+    cat("\nUsing fold based on the normalized counts...\n")
+    if (is.null(time_point)) {
+      max_fold <- max(pull(df, fold_norm))
+      time_point <- df %>%
+        filter(fold_norm == max_fold) %>%
+        pull(Time) %>%
+        unique()
+      treatment <- df %>%
+        filter(fold_norm == max_fold) %>%
+        pull(Treatment)
+      cat("\nMaximum fold is:", max_fold)
+      cat("\nMax. fold is reached after", time_point, "minutes")
+      cat("\nTreatment:", as.character(treatment))
+      cat("\n")
+    } else {
+      max_fold <- df %>%
+        filter(Time == time_point) %>%
+        pull(fold_norm) %>%
+        max() %>%
+        unique()
+      treatment <- df %>%
+        filter(fold_norm == max_fold) %>%
+        pull(Treatment)
+      cat("\nSelected time point:", time_point, "minutes")
+      cat("\nFold is:", max_fold)
+      cat("\nTreatment:", as.character(treatment))
+      cat("\n")
+    }
+  } else if (use_fold == "raw") {
+    cat("\nUsing fold based on raw counts...\n")
+    if (is.null(time_point)) {
+      max_fold <- max(pull(df, fold_raw))
+      time_point <- df %>%
+        filter(fold_raw == max_fold) %>%
+        pull(Time) %>%
+        unique()
+      treatment <- df %>%
+        filter(fold_raw == max_fold) %>%
+        pull(Treatment)
+      cat("\nMaximum fold is:", max_fold)
+      cat("\nMax. fold is reached after", time_point, "minutes")
+      cat("\nTreatment:", as.character(treatment))
+      cat("\n")
+    } else {
+      max_fold <- df %>%
+        filter(Time == time_point) %>%
+        pull(fold_raw) %>%
+        max() %>%
+        unique()
+      treatment <- df %>%
+        filter(fold_raw == max_fold) %>%
+        pull(Treatment)
+      cat("\nSelected time point:", time_point, "minutes")
+      cat("\nFold is:", max_fold)
+      cat("\nTreatment:", as.character(treatment))
+      cat("\n")
+    }
+  } else {
+    cat(
+      "\nWARNING",
+      "\n--------------------------------------------------------------\n",
+      "The use_fold option is not available.\n",
+      "Select on of: fold_norm or fold_raw\n\n"
+    )
+    return(NULL)
+  }
+
+  # Extract the rows from df for the specified time point. Only the NanoBiT
+  # counts are included.
+  df <- df %>%
+    filter(Time == time_point)
+
+  # Filter conditions to include? If specified, the conditions to include in the
+  # plot will be filtered by the user defined options.
+  if (!is.null(include_conditions)) {
+    if (all(include_conditions %in% unique(df$Treatment))) {
+      df <- df %>% filter(Treatment %in% include_conditions)
+    } else {
+      # If the list of conditions is not correct, cat an error message to the
+      # terminal.
+      cat(
+        "\nWARNING",
+        "\n--------------------------------------------------------------\n",
+        "\nOne or more of the condition(s) you selected is unavailable.\n\n"
+      )
+      return(NULL)
+    }
+  }
+
+  # Determine type of data to plot.
+  # if type is 'normalized' use the normalized counts.
+  if (type == "normalized") {
+    df <- df %>%
+      select(Type, Time, Treatment, mean_norm, sd_norm) %>%
+      mutate(
+        mean = mean_norm,
+        sd = sd_norm
+      )
+    cat("\n>>> Plotting normalized counts\n")
+    # If type is 'raw' use the raw counts.
+  } else if (type == "raw") {
+    df <- df %>%
+      select(Type, Time, Treatment, mean_raw, sd_raw) %>%
+      mutate(
+        mean = mean_raw,
+        sd = sd_raw
+      )
+    cat("\n>>> Plotting raw counts\n")
+    # If type is 'fold_raw' use the fold changes of the raw counts.
+  } else if (type == "fold_raw") {
+    df <- df %>%
+      select(Type, Time, Treatment, fold_raw, fold_raw_sd) %>%
+      mutate(
+        mean = fold_raw,
+        sd = fold_raw_sd
+      )
+    cat("\n>>> Plotting folds based on raw counts\n")
+    # If type is 'fold_norm' use the fold changes of the normalized counts.
+  } else if (type == "fold_norm") {
+    df <- df %>%
+      select(Type, Time, Treatment, fold_norm, fold_norm_sd) %>%
+      mutate(
+        mean = fold_norm,
+        sd = fold_norm_sd
+      )
+    cat("\n>>> Plotting folds based on normalized counts\n")
+  } else {
+    # If not correctly specified, cat an error message to the terminal and
+    # return NULL.
+    cat(
+      "\nWARNING",
+      "\n--------------------------------------------------------------\n",
+      "Type needs to be one of:
+        'raw'
+        'normalized'
+        'fold_raw'
+        'fold_norm'\n"
+    )
+    return(NULL)
+  }
+
+  # Generate the plot.
+  plot <- ggplot(data = df) +
+    geom_errorbar(aes(x = Treatment, ymin = mean - sd, ymax = mean + sd),
+      linewidth = errorbar_size, width = whiskersize, color = errorbar_color
+    ) +
+    geom_col(aes(x = Treatment, y = mean), fill = bar_color) +
+    labs(title = title, subtitle = subtitle) +
+    xlab(title_x) +
+    ylab(title_y) +
+    theme(
+      panel.border = element_rect(fill = NA, color = "#595959"),
+      panel.background = element_rect(fill = "transparent"),
+      plot.title = element_text(size = textsize, face = "bold"),
+      plot.subtitle = element_text(size = textsize),
+      axis.title = element_text(size = textsize),
+      axis.text = element_text(size = textsize),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      axis.ticks.x = element_blank(),
+      axis.line = element_blank()
+    )
+
+  # Display plot.
+  print(plot)
+
+  # Save plot to directory.
+  ggsave(
+    plot = plot,
+    file = file.path(dir_output, filename),
+    device = file_extension,
+    height = file_height,
+    width = file_width,
+    dpi = dpi,
+  )
+
+  return(plot)
+}
+
+# * Upload files ***************************************************************
+# - Biological replicate 1 -----------------------------------------------------
+bio_1 <- tryCatch(
+  read_delim(
+    file = file_replicate_1,
+    delim = delim
+  ) %>%
+    mutate(Replicate = "Bio 1"),
+  error = function(e) {
+    return(NULL)
+  },
+  warning = function(w) {
+    return(NULL)
+  }
+)
+
+# Check data.
+bio_1
+
+# - Biological replicate 2 -----------------------------------------------------
+bio_2 <- tryCatch(
+  read_delim(
+    file = file_replicate_2,
+    delim = delim
+  ) %>%
+    mutate(Replicate = "Bio 2"),
+  error = function(e) {
+    return(NULL)
+  },
+  warning = function(w) {
+    return(NULL)
+  }
+)
+
+# Check data.
+bio_2
+
+# - Biological replicate 3 -----------------------------------------------------
+bio_3 <- tryCatch(
+  read_delim(
+    file = file_replicate_3,
+    delim = delim
+  ) %>%
+    mutate(Replicate = "Bio 3"),
+  error = function(e) {
+    return(NULL)
+  },
+  warning = function(w) {
+    return(NULL)
+  }
+)
+
+# Check data.
+bio_3
+
+# * Analysis *******************************************************************
+# - Combine data ---------------------------------------------------------------
+data <- bind_rows(bio_1, bio_2, bio_3) %>%
+  relocate(Replicate, .after = Type)
+
+# - Calculate mean and sd ------------------------------------------------------
+data_summarised <- data %>%
+  group_by(Time, Treatment, Type) %>%
+  summarise(
+    mean_r = mean(mean_raw),
+    sd_r = sd(mean_raw),
+    mean_n = mean(mean_norm),
+    sd_n = sd(mean_norm),
+    n = n()
+  ) %>%
+  rename(
+    mean_raw = mean_r,
+    sd_raw = sd_r,
+    mean_norm = mean_n,
+    sd_norm = sd_n
+  )
+
+# Inspect data.
+data_summarised
+
+# - Fold change ----------------------------------------------------------------
+# Extract the counts and corresponding st. deviations (raw and normalized) for
+# the condition that will be used for calculating the fold changes.
+# Condition is defined in fold_condition.
+fold_factor <- data_summarised %>%
+  filter(Treatment == fold_condition) %>%
+  select(-n) %>%
+  rename(
+    fold_r = mean_raw,
+    sd_fold_r = sd_raw,
+    fold_n = mean_norm,
+    sd_fold_n = sd_norm
+  )
+
+# Use fold_factor counts to calculate the fold changes. Fold changes are
+# calculated based on both the raw counts and the normalized counts.
+data_summarised <- data_summarised %>%
+  left_join(fold_factor, join_by(Time, Type)) %>%
+  select(-Treatment.y) %>%
+  rename(Treatment = Treatment.x) %>%
+  mutate(
+    fold_raw = mean_raw / fold_r,
+    fold_raw_sd = fold_sd(
+      mean_a = mean_raw,
+      mean_b = fold_r,
+      sd_a = sd_raw,
+      sd_b = sd_fold_r
+    ),
+    fold_norm = mean_norm / fold_n,
+    fold_norm_sd = fold_sd(
+      mean_a = mean_norm,
+      mean_b = fold_n,
+      sd_a = sd_norm,
+      sd_b = sd_fold_n
+    )
+  ) %>%
+  select(-fold_r, -fold_n, -sd_fold_r, -sd_fold_n) %>%
+  relocate(n, .after = last_col())
+
+# Check data.
+data_summarised
+
+# - Factorize Treatment --------------------------------------------------------
+# Convert the Treatment column to an ordered factor. The ordered that is defined
+# will be used in ggplot2 to determine the order for plotting.
+if (!is.null(levels)) {
+  data_summarised$Treatment <- factor(
+    data_summarised$Treatment,
+    levels = levels, ordered = TRUE
+  )
+}
+
+# Check data.
+data_summarised
+
+# - Save data to file ----------------------------------------------------------
+write_delim(
+  data_summarised,
+  file = file.path(dir_output, "summarised_data.csv"),
+  delim = delim
+)
+
+# * Visualizations *************************************************************
+# - Baseline counts ------------------------------------------------------------
+# Plot individual points (corresponding to each Well).
+plot_base_point <- baseline_plot(type = "point", filename = "baseline_point")
+
+# Plot as boxplots.
+plot_base_box <- baseline_plot(type = "box", filename = "baseline_box")
+
+# - NanoBiT counts -------------------------------------------------------------
+# Plot raw counts.
+nanobit_plot(
+  type = "normalized",
+  filename = "Normalized_counts",
+  title_y = "Normalized counts",
+)
+
+# Plot raw counts.
+nanobit_plot(
+  type = "raw",
+  filename = "Raw_counts",
+  title_y = "Raw counts"
+)
+
+# Plot fold - normalized counts.
+nanobit_plot(
+  type = "fold_norm",
+  include_baseline = FALSE,
+  filename = "fold_normalized",
+  title_y = "Fold"
+)
+
+# Plot fold - raw counts.
+nanobit_plot(
+  type = "fold_raw",
+  include_baseline = FALSE,
+  filename = "fold_raw",
+  title_y = "Fold"
+)
+
+# - Individual time points -----------------------------------------------------
+individual_plot(
+  filename = "max_fold_normalized",
+  time_point = 20,
+  type = "raw"
+)
