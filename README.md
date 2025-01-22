@@ -1,2 +1,2 @@
 # NanoBIT
-Specific scripts used for analysis of NanoBiT data. These are not scripts that work out-of-the-box with any NanoBiT assay output, but are specifically designed to work with the wet lab workflow from our lab.
+Specific scripts used for analysis of NanoBiT data. These are not scripts that work out-of-the-box with any NanoBiT assay output, but are specifically designed to work with the wet lab workflow from our lab. However, it should be fairly easy to adjust the code to work for you (adjustments would mostly entail setting the original output files of your instrument to fit the required input for these scripts).
